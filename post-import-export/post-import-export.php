@@ -138,7 +138,6 @@ class Post_Import_Export {
             wp_die('Post not found');
         }
 
-        // Gather post data
         $export_data = array(
             'post_title' => $post->post_title,
             'post_content' => $post->post_content,
@@ -158,16 +157,13 @@ class Post_Import_Export {
             'featured_image' => '',
         );
 
-        // Get all post meta
         $post_meta = get_post_meta($post_id);
         foreach ($post_meta as $key => $values) {
-            // Skip internal WordPress meta
-            if (substr($key, 0, 1) !== '_' || in_array($key, array('_edit_lock', '_edit_last'))) {
+            if (!in_array($key, array('_edit_lock', '_edit_last', '_encloseme'))) {
                 $export_data['post_meta'][$key] = $values;
             }
         }
 
-        // Get taxonomies (categories, tags, etc.)
         $taxonomies = get_object_taxonomies($post->post_type);
         foreach ($taxonomies as $taxonomy) {
             $terms = wp_get_post_terms($post_id, $taxonomy);
@@ -176,23 +172,19 @@ class Post_Import_Export {
                     return array(
                         'name' => $term->name,
                         'slug' => $term->slug,
-                        'description' => $term->description,
                     );
                 }, $terms);
             }
         }
 
-        // Get featured image URL
         if (has_post_thumbnail($post_id)) {
             $export_data['featured_image'] = get_the_post_thumbnail_url($post_id, 'full');
             $export_data['featured_image_id'] = get_post_thumbnail_id($post_id);
         }
 
-        // Create JSON file
         $filename = sanitize_title($post->post_title) . '-' . date('Y-m-d-H-i-s') . '.json';
         $json = json_encode($export_data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
 
-        // Send download headers
         header('Content-Type: application/json');
         header('Content-Disposition: attachment; filename="' . $filename . '"');
         header('Content-Length: ' . strlen($json));
@@ -209,7 +201,6 @@ class Post_Import_Export {
             wp_die('File upload error code: ' . $_FILES['import_file']['error']);
         }
         
-        // Read and decode JSON file
         $json_content = file_get_contents($_FILES['import_file']['tmp_name']);
         $import_data = json_decode($json_content, true);
 
@@ -217,7 +208,6 @@ class Post_Import_Export {
             wp_die('Invalid JSON file');
         }
 
-        // Update post
         $post_data = array(
             'ID' => $post_id,
             'post_title' => $import_data['post_title'],
@@ -233,46 +223,65 @@ class Post_Import_Export {
 
         wp_update_post($post_data);
 
-        // Update post meta
-        if (isset($import_data['post_meta'])) {
-            // First, delete existing meta (optional - comment out if you want to merge)
-            $existing_meta = get_post_meta($post_id);
-            foreach ($existing_meta as $key => $value) {
-                if (substr($key, 0, 1) !== '_' || in_array($key, array('_edit_lock', '_edit_last'))) {
-                    delete_post_meta($post_id, $key);
-                }
-            }
-
-            // Import new meta
-            foreach ($import_data['post_meta'] as $key => $values) {
+        $existing_meta = get_post_meta($post_id);
+        foreach ($existing_meta as $key => $value) {
+            if (!in_array($key, array('_edit_lock', '_edit_last', '_encloseme'))) {
                 delete_post_meta($post_id, $key);
+            }
+        }
+        
+        if (isset($import_data['post_meta'])) {
+            foreach ($import_data['post_meta'] as $key => $values) {
+                if (in_array($key, array('_edit_lock', '_edit_last', '_encloseme'))) {
+                    continue;
+                }
+                
                 foreach ($values as $value) {
-                    add_post_meta($post_id, $key, maybe_unserialize($value));
+                    if (is_serialized($value)) {
+                        $unserialized_value = unserialize($value);
+                    } else {
+                        $unserialized_value = $value;
+                    }
+                    add_post_meta($post_id, $key, $unserialized_value);
                 }
             }
         }
 
-        // Update taxonomies
         if (isset($import_data['taxonomies'])) {
             foreach ($import_data['taxonomies'] as $taxonomy => $terms) {
+                if (!taxonomy_exists($taxonomy)) {
+                    continue;
+                }
+                
                 $term_ids = array();
                 foreach ($terms as $term_data) {
-                    $term = term_exists($term_data['slug'], $taxonomy);
-                    if (!$term) {
-                        $term = wp_insert_term($term_data['name'], $taxonomy, array(
-                            'slug' => $term_data['slug'],
-                            'description' => $term_data['description'],
-                        ));
-                    }
-                    if (!is_wp_error($term)) {
-                        $term_ids[] = is_array($term) ? $term['term_id'] : $term;
+                    $existing_term = get_term_by('slug', $term_data['slug'], $taxonomy);
+                    
+                    if ($existing_term) {
+                        $term_ids[] = $existing_term->term_id;
+                    } else {
+                        $existing_term = get_term_by('name', $term_data['name'], $taxonomy);
+                        
+                        if ($existing_term) {
+                            $term_ids[] = $existing_term->term_id;
+                        } else {
+                            $new_term = wp_insert_term($term_data['name'], $taxonomy, array(
+                                'slug' => $term_data['slug']
+                            ));
+                            
+                            if (!is_wp_error($new_term)) {
+                                $term_ids[] = $new_term['term_id'];
+                            }
+                        }
                     }
                 }
-                wp_set_object_terms($post_id, $term_ids, $taxonomy);
+                
+                if (!empty($term_ids)) {
+                    wp_set_object_terms($post_id, $term_ids, $taxonomy, false);
+                }
             }
         }
 
-        // Return success
         wp_send_json_success();
     }
 
@@ -336,5 +345,4 @@ class Post_Import_Export {
     }
 }
 
-// Initialize plugin
 new Post_Import_Export();
