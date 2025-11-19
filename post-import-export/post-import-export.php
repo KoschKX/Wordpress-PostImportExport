@@ -6,12 +6,8 @@
  * Author: Gary Angelone Jr.
  */
 
-if (!defined('ABSPATH')) {
-    exit;
-}
-
 class Post_Import_Export {
-    
+
     public function __construct() {
         add_action('add_meta_boxes', array($this, 'add_meta_box'));
         add_action('wp_ajax_pie_export_post', array($this, 'ajax_export_post'));
@@ -49,10 +45,15 @@ class Post_Import_Export {
                 <input type="file" id="pie-import-file" accept=".json" style="display:none;">
                 <input type="hidden" id="pie-post-id" value="<?php echo $post->ID; ?>">
                 <?php wp_nonce_field('import_post_' . $post->ID, 'pie_import_nonce'); ?>
-                
+
                 <label for="pie-import-file" class="button button-secondary button-large">
                     <span class="dashicons dashicons-upload"></span> Import
                 </label>
+                <div style="margin-top:8px;">
+                    <label><input type="checkbox" id="pie-replace-url" checked> Replace URLs</label>
+                    <span>&nbsp;</span>
+                    <label><input type="checkbox" id="pie-import-images" checked> Import images</label>
+                </div>
             </div>
         </div>
         <style>
@@ -110,25 +111,22 @@ class Post_Import_Export {
             wp_send_json_error(array('message' => 'No post ID provided'));
             return;
         }
-        
         $post_id = intval($_POST['post_id']);
-        
         if (!isset($_POST['import_post_nonce'])) {
             wp_send_json_error(array('message' => 'No nonce provided'));
             return;
         }
-        
         if (!wp_verify_nonce($_POST['import_post_nonce'], 'import_post_' . $post_id)) {
             wp_send_json_error(array('message' => 'Invalid nonce'));
             return;
         }
-        
         if (!current_user_can('edit_posts')) {
             wp_send_json_error(array('message' => 'Unauthorized'));
             return;
         }
-        
         $this->import_post($post_id);
+        // If import_post does not exit, send error
+        wp_send_json_error(array('message' => 'Import handler did not return a response'));
     }
 
     public function export_post($post_id) {
@@ -139,6 +137,7 @@ class Post_Import_Export {
         }
 
         $export_data = array(
+            'site_url' => get_site_url(),
             'post_title' => $post->post_title,
             'post_content' => $post->post_content,
             'post_excerpt' => $post->post_excerpt,
@@ -193,26 +192,95 @@ class Post_Import_Export {
     }
 
     public function import_post($post_id) {
+    error_log('Post Import Export: import_post called for post_id ' . $post_id);
         if (!isset($_FILES['import_file'])) {
-            wp_die('No file uploaded');
+            wp_send_json_error(array('message' => 'No file uploaded'));
+            return;
         }
-        
         if ($_FILES['import_file']['error'] !== UPLOAD_ERR_OK) {
-            wp_die('File upload error code: ' . $_FILES['import_file']['error']);
+            error_log('Post Import Export: File upload error code: ' . $_FILES['import_file']['error']);
+            wp_send_json_error(array('message' => 'File upload error code: ' . $_FILES['import_file']['error']));
+            return;
         }
-        
         $json_content = file_get_contents($_FILES['import_file']['tmp_name']);
-        $import_data = json_decode($json_content, true);
-
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            wp_die('Invalid JSON file');
+        if ($json_content === false) {
+            error_log('Post Import Export: Failed to read uploaded file');
+            wp_send_json_error(array('message' => 'Failed to read uploaded file'));
+            return;
         }
+        $import_data = json_decode($json_content, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log('Post Import Export: Invalid JSON file: ' . json_last_error_msg());
+            wp_send_json_error(array('message' => 'Invalid JSON file: ' . json_last_error_msg()));
+            return;
+        }
+        if (!isset($import_data['post_title'])) {
+            error_log('Post Import Export: Missing post_title in import data');
+            wp_send_json_error(array('message' => 'Missing post_title in import data'));
+            return;
+        }
+        error_log('Post Import Export: JSON parsed, post_title: ' . $import_data['post_title']);
+    error_log('Post Import Export: Updating post...');
+    error_log('Post Import Export: Post updated, checking for image import...');
+    error_log('Post Import Export: Import complete, sending success response.');
 
+        $old_site_url = isset($import_data['site_url']) ? $import_data['site_url'] : '';
+        $new_site_url = get_site_url();
+        $replace_url = isset($_POST['replace_url']) && $_POST['replace_url'] === '1';
+        $import_images = isset($_POST['import_images']) && $_POST['import_images'] === '1';
+
+        // Helper function to replace URLs recursively
+        $replace_site_url = function($value) use ($old_site_url, $new_site_url, $replace_url) {
+            if (!$replace_url) return $value;
+            if (is_array($value)) {
+                foreach ($value as $k => $v) {
+                    $value[$k] = $replace_site_url($v);
+                }
+                return $value;
+            } elseif (is_string($value) && $old_site_url) {
+                return str_replace($old_site_url, $new_site_url, $value);
+            }
+            return $value;
+        };
+
+        $post_content = $replace_site_url($import_data['post_content']);
+        if ($import_images) {
+            // Find all image URLs in post_content (normal and escaped slashes)
+            error_log('Post Import Export: Raw post_content: ' . $post_content);
+            $pattern = '/https?:\\*\/\\*\/[^"\s\[\]]+\.(jpg|jpeg|png|gif)/i';
+            $pattern2 = '/https?:\/\/[^"\s\[\]]+\.(jpg|jpeg|png|gif)/i';
+            preg_match_all($pattern, $post_content, $matches1);
+            preg_match_all($pattern2, $post_content, $matches2);
+            $all_urls = array_unique(array_merge($matches1[0], $matches2[0]));
+            error_log('Post Import Export: Found image URLs in post_content: ' . print_r($all_urls, true));
+            foreach ($all_urls as $img_url) {
+                $clean_url = str_replace(['\\/', '\\'], ['/', ''], $img_url);
+                // If the image URL is not from the original site, reconstruct it
+                $orig_host = parse_url($old_site_url, PHP_URL_HOST);
+                $img_host = parse_url($clean_url, PHP_URL_HOST);
+                if ($img_host !== $orig_host) {
+                    // Replace host with original site host
+                    $orig_scheme = parse_url($old_site_url, PHP_URL_SCHEME) ?: 'https';
+                    $img_path = parse_url($clean_url, PHP_URL_PATH);
+                    $clean_url = $orig_scheme . '://' . $orig_host . $img_path;
+                    error_log('Post Import Export: Reconstructed original image URL: ' . $clean_url);
+                }
+                error_log('Post Import Export: Processing image URL: ' . $clean_url);
+                $new_img_id = $this->pie_import_image($clean_url);
+                if ($new_img_id && !is_wp_error($new_img_id)) {
+                    $new_img_url = wp_get_attachment_url($new_img_id);
+                    if ($new_img_url) {
+                        $post_content = str_replace($img_url, $new_img_url, $post_content);
+                        $post_content = str_replace($clean_url, $new_img_url, $post_content);
+                    }
+                }
+            }
+        }
         $post_data = array(
             'ID' => $post_id,
             'post_title' => $import_data['post_title'],
-            'post_content' => $import_data['post_content'],
-            'post_excerpt' => $import_data['post_excerpt'],
+            'post_content' => $post_content,
+            'post_excerpt' => $replace_site_url($import_data['post_excerpt']),
             'post_status' => $import_data['post_status'],
             'post_name' => $import_data['post_name'],
             'comment_status' => $import_data['comment_status'],
@@ -220,70 +288,74 @@ class Post_Import_Export {
             'post_password' => $import_data['post_password'],
             'menu_order' => $import_data['menu_order'],
         );
-
         wp_update_post($post_data);
 
-        $existing_meta = get_post_meta($post_id);
-        foreach ($existing_meta as $key => $value) {
-            if (!in_array($key, array('_edit_lock', '_edit_last', '_encloseme'))) {
-                delete_post_meta($post_id, $key);
-            }
-        }
-        
-        if (isset($import_data['post_meta'])) {
-            foreach ($import_data['post_meta'] as $key => $values) {
-                if (in_array($key, array('_edit_lock', '_edit_last', '_encloseme'))) {
-                    continue;
-                }
-                
-                foreach ($values as $value) {
-                    if (is_serialized($value)) {
-                        $unserialized_value = unserialize($value);
-                    } else {
-                        $unserialized_value = $value;
-                    }
-                    add_post_meta($post_id, $key, $unserialized_value);
-                }
-            }
-        }
-
-        if (isset($import_data['taxonomies'])) {
-            foreach ($import_data['taxonomies'] as $taxonomy => $terms) {
-                if (!taxonomy_exists($taxonomy)) {
-                    continue;
-                }
-                
-                $term_ids = array();
-                foreach ($terms as $term_data) {
-                    $existing_term = get_term_by('slug', $term_data['slug'], $taxonomy);
-                    
-                    if ($existing_term) {
-                        $term_ids[] = $existing_term->term_id;
-                    } else {
-                        $existing_term = get_term_by('name', $term_data['name'], $taxonomy);
-                        
-                        if ($existing_term) {
-                            $term_ids[] = $existing_term->term_id;
-                        } else {
-                            $new_term = wp_insert_term($term_data['name'], $taxonomy, array(
-                                'slug' => $term_data['slug']
-                            ));
-                            
-                            if (!is_wp_error($new_term)) {
-                                $term_ids[] = $new_term['term_id'];
-                            }
-                        }
-                    }
-                }
-                
-                if (!empty($term_ids)) {
-                    wp_set_object_terms($post_id, $term_ids, $taxonomy, false);
-                }
-            }
-        }
-
-        wp_send_json_success();
+        wp_send_json_success(array('message' => 'Import completed successfully'));
     }
+
+    // Download and import images from the old site
+    private function pie_import_images_from_old_site($import_data, $old_site_url, $new_site_url) {
+        // Example: download featured image and attach to post
+        if (!empty($import_data['featured_image'])) {
+            $image_url = $import_data['featured_image'];
+            // Only import if image is from old site
+            if (strpos($image_url, $old_site_url) === 0) {
+                $this->pie_import_image($image_url);
+            }
+        }
+    }
+
+    // Download and add image to media library
+    private function pie_import_image($image_url) {
+        error_log('Post Import Export: Attempting to import image: ' . $image_url);
+        $tmp = download_url($image_url);
+        if (is_wp_error($tmp)) {
+            error_log('Post Import Export: download_url failed: ' . $tmp->get_error_message());
+            return false;
+        }
+        $file_name = basename($image_url);
+        if (!file_exists($tmp)) {
+            error_log('Post Import Export: Downloaded file does not exist: ' . $tmp);
+            return false;
+        }
+        $file_size = filesize($tmp);
+        $file_hash = md5_file($tmp);
+
+        // Search for any existing image in media library by file size and hash
+        $args = array(
+            'post_type'      => 'attachment',
+            'post_status'    => 'inherit',
+            'posts_per_page' => -1,
+        );
+        $query = new WP_Query($args);
+        if ($query->have_posts()) {
+            foreach ($query->posts as $post) {
+                $path = get_attached_file($post->ID);
+                if ($path && file_exists($path)) {
+                    $existing_size = filesize($path);
+                    $existing_hash = md5_file($path);
+                    if ($existing_size == $file_size && $existing_hash === $file_hash) {
+                        error_log('Post Import Export: Image already exists in media library (size/hash match): ' . $path);
+                        @unlink($tmp);
+                        return $post->ID;
+                    }
+                }
+            }
+        }
+
+        $file_array = array();
+        $file_array['name'] = $file_name;
+        $file_array['tmp_name'] = $tmp;
+        $id = media_handle_sideload($file_array, 0);
+        if (is_wp_error($id)) {
+            error_log('Post Import Export: media_handle_sideload failed: ' . $id->get_error_message());
+            @unlink($tmp);
+            return false;
+        }
+        error_log('Post Import Export: Image imported successfully, attachment ID: ' . $id);
+        return $id;
+    }
+
 
     public function enqueue_scripts($hook) {
         if ('post.php' !== $hook && 'post-new.php' !== $hook) {
@@ -310,18 +382,13 @@ class Post_Import_Export {
                 $('#pie-import-file').on('change', function(e) {
                     var file = e.target.files[0];
                     if (!file) return;
-                    
-                    if (!confirm('Replace this post with the imported content?')) {
-                        $(this).val('');
-                        return;
-                    }
-                    
                     var formData = new FormData();
                     formData.append('action', 'pie_import_post');
                     formData.append('post_id', $('#pie-post-id').val());
                     formData.append('import_post_nonce', $('#pie_import_nonce').val());
                     formData.append('import_file', file);
-                    
+                    formData.append('replace_url', $('#pie-replace-url').is(':checked') ? '1' : '0');
+                    formData.append('import_images', $('#pie-import-images').is(':checked') ? '1' : '0');
                     $.ajax({
                         url: ajaxurl,
                         type: 'POST',
@@ -332,6 +399,7 @@ class Post_Import_Export {
                             if (response.success) {
                                 window.location.reload();
                             } else {
+                                console.log('Import failed response:', response);
                                 alert('Import failed');
                             }
                         },
