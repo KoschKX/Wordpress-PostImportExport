@@ -192,37 +192,37 @@ class Post_Import_Export {
     }
 
     public function import_post($post_id) {
-    error_log('Post Import Export: import_post called for post_id ' . $post_id);
+        // error_log('Post Import Export: import_post called for post_id ' . $post_id);
         if (!isset($_FILES['import_file'])) {
             wp_send_json_error(array('message' => 'No file uploaded'));
             return;
         }
         if ($_FILES['import_file']['error'] !== UPLOAD_ERR_OK) {
-            error_log('Post Import Export: File upload error code: ' . $_FILES['import_file']['error']);
+            // error_log('Post Import Export: File upload error code: ' . $_FILES['import_file']['error']);
             wp_send_json_error(array('message' => 'File upload error code: ' . $_FILES['import_file']['error']));
             return;
         }
         $json_content = file_get_contents($_FILES['import_file']['tmp_name']);
         if ($json_content === false) {
-            error_log('Post Import Export: Failed to read uploaded file');
+            // error_log('Post Import Export: Failed to read uploaded file');
             wp_send_json_error(array('message' => 'Failed to read uploaded file'));
             return;
         }
         $import_data = json_decode($json_content, true);
         if (json_last_error() !== JSON_ERROR_NONE) {
-            error_log('Post Import Export: Invalid JSON file: ' . json_last_error_msg());
+            // error_log('Post Import Export: Invalid JSON file: ' . json_last_error_msg());
             wp_send_json_error(array('message' => 'Invalid JSON file: ' . json_last_error_msg()));
             return;
         }
         if (!isset($import_data['post_title'])) {
-            error_log('Post Import Export: Missing post_title in import data');
+            // error_log('Post Import Export: Missing post_title in import data');
             wp_send_json_error(array('message' => 'Missing post_title in import data'));
             return;
         }
-        error_log('Post Import Export: JSON parsed, post_title: ' . $import_data['post_title']);
-    error_log('Post Import Export: Updating post...');
-    error_log('Post Import Export: Post updated, checking for image import...');
-    error_log('Post Import Export: Import complete, sending success response.');
+        // error_log('Post Import Export: JSON parsed, post_title: ' . $import_data['post_title']);
+        // error_log('Post Import Export: Updating post...');
+        // error_log('Post Import Export: Post updated, checking for image import...');
+        // error_log('Post Import Export: Import complete, sending success response.');
 
         $old_site_url = isset($import_data['site_url']) ? $import_data['site_url'] : '';
         $new_site_url = get_site_url();
@@ -246,13 +246,13 @@ class Post_Import_Export {
         $post_content = $replace_site_url($import_data['post_content']);
         if ($import_images) {
             // Find all image URLs in post_content (normal and escaped slashes)
-            error_log('Post Import Export: Raw post_content: ' . $post_content);
+            // error_log('Post Import Export: Raw post_content: ' . $post_content);
             $pattern = '/https?:\\*\/\\*\/[^"\s\[\]]+\.(jpg|jpeg|png|gif)/i';
             $pattern2 = '/https?:\/\/[^"\s\[\]]+\.(jpg|jpeg|png|gif)/i';
             preg_match_all($pattern, $post_content, $matches1);
             preg_match_all($pattern2, $post_content, $matches2);
             $all_urls = array_unique(array_merge($matches1[0], $matches2[0]));
-            error_log('Post Import Export: Found image URLs in post_content: ' . print_r($all_urls, true));
+            // error_log('Post Import Export: Found image URLs in post_content: ' . print_r($all_urls, true));
             foreach ($all_urls as $img_url) {
                 $clean_url = str_replace(['\\/', '\\'], ['/', ''], $img_url);
                 // If the image URL is not from the original site, reconstruct it
@@ -263,9 +263,9 @@ class Post_Import_Export {
                     $orig_scheme = parse_url($old_site_url, PHP_URL_SCHEME) ?: 'https';
                     $img_path = parse_url($clean_url, PHP_URL_PATH);
                     $clean_url = $orig_scheme . '://' . $orig_host . $img_path;
-                    error_log('Post Import Export: Reconstructed original image URL: ' . $clean_url);
+                    // error_log('Post Import Export: Reconstructed original image URL: ' . $clean_url);
                 }
-                error_log('Post Import Export: Processing image URL: ' . $clean_url);
+                // error_log('Post Import Export: Processing image URL: ' . $clean_url);
                 $new_img_id = $this->pie_import_image($clean_url);
                 if ($new_img_id && !is_wp_error($new_img_id)) {
                     $new_img_url = wp_get_attachment_url($new_img_id);
@@ -310,12 +310,12 @@ class Post_Import_Export {
         error_log('Post Import Export: Attempting to import image: ' . $image_url);
         $tmp = download_url($image_url);
         if (is_wp_error($tmp)) {
-            error_log('Post Import Export: download_url failed: ' . $tmp->get_error_message());
+            // error_log('Post Import Export: download_url failed: ' . $tmp->get_error_message());
             return false;
         }
         $file_name = basename($image_url);
         if (!file_exists($tmp)) {
-            error_log('Post Import Export: Downloaded file does not exist: ' . $tmp);
+            // error_log('Post Import Export: Downloaded file does not exist: ' . $tmp);
             return false;
         }
         $file_size = filesize($tmp);
@@ -335,7 +335,7 @@ class Post_Import_Export {
                     $existing_size = filesize($path);
                     $existing_hash = md5_file($path);
                     if ($existing_size == $file_size && $existing_hash === $file_hash) {
-                        error_log('Post Import Export: Image already exists in media library (size/hash match): ' . $path);
+                        // error_log('Post Import Export: Image already exists in media library (size/hash match): ' . $path);
                         @unlink($tmp);
                         return $post->ID;
                     }
@@ -348,7 +348,7 @@ class Post_Import_Export {
         $file_array['tmp_name'] = $tmp;
         $id = media_handle_sideload($file_array, 0);
         if (is_wp_error($id)) {
-            error_log('Post Import Export: media_handle_sideload failed: ' . $id->get_error_message());
+            // error_log('Post Import Export: media_handle_sideload failed: ' . $id->get_error_message());
             @unlink($tmp);
             return false;
         }
